@@ -1,0 +1,167 @@
+# Below is a python script to get a list of all the user related attributes from PingOne.
+
+import requests
+import csv
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+ 
+# ==== CONFIGURATION ====
+environment_id = ""  # Enter your environment ID
+bearer_token = "" #Enter your token here
+ 
+url = f"https://api.pingone.com/v1/environments/{environment_id}/users"
+ 
+headers = {
+    "Authorization": f"Bearer {bearer_token}",
+    "Content-Type": "application/json"
+}
+ 
+input_csv = "" # enter input file here
+output_csv = "" # enter output file here
+failure_log = "" #enter a file for showing error logs
+ 
+# ==== FUNCTION TO FETCH USER DETAILS ====
+def fetch_user_details(username):
+    try:
+        params = {"filter": f'username eq "{username}"'}
+        response = requests.get(url, headers=headers, params=params)
+ 
+        if response.status_code != 200:
+            return None
+ 
+        data = response.json()
+        users = data.get("_embedded", {}).get("users", [])
+        if not users:
+            return None
+ 
+        user = users[0]
+        correlation_attrs = (
+            user.get("_embedded", {})
+                .get("password", {})
+                .get("external", {})
+                .get("gateway", {})
+                .get("correlationAttributes", {})
+        )
+ 
+        name_info = user.get("name", {})
+ 
+        return {
+            "user_id": user.get("id"),
+            "username": user.get("username"),
+            "email": user.get("email"),
+            "sAMAccountName": correlation_attrs.get("sAMAccountName"),
+            "dn": correlation_attrs.get("dn"),
+            "employeeID": correlation_attrs.get("employeeID"),
+            "objectGUID": correlation_attrs.get("objectGUID"),
+            "objectsid": correlation_attrs.get("objectsid"),
+            "accountId": user.get("accountId"),
+            "domain": user.get("domain"),
+            "userPrincipalName": user.get("userPrincipalName"),
+            "manager": user.get("manager"),
+            "managerName": user.get("managerName"),
+            "jobProfile": user.get("jobProfile"),
+            "title": user.get("title"),
+            "organizationalStatus": user.get("organizationalStatus"),
+            "enabled": user.get("enabled"),
+            "mfaEnabled": user.get("mfaEnabled"),
+            "country": user.get("country"),
+            "officeLocation": user.get("officeLocation"),
+            "mobilePhone": user.get("mobilePhone"),
+            "primaryPhone": user.get("primaryPhone"),
+            "givenName": name_info.get("given"),
+            "familyName": name_info.get("family"),
+            "formattedName": name_info.get("formatted")
+        }
+ 
+    except Exception as e:
+        print(f"Exception for {username}: {str(e)}")
+        return None
+ 
+# ==== INIT OUTPUT FILES ====
+with open(output_csv, 'w', newline='', encoding='utf-8') as outfile:
+    writer = csv.writer(outfile)
+    writer.writerow([
+        "user_id", "username", "email", "sAMAccountName", "dn", "employeeID",
+        "objectGUID", "objectsid", "accountId", "domain", "userPrincipalName",
+        "manager", "managerName", "jobProfile", "title", "organizationalStatus",
+        "enabled", "mfaEnabled", "country", "officeLocation",
+        "mobilePhone", "primaryPhone", "givenName", "familyName", "formattedName"
+    ])
+ 
+with open(failure_log, 'w', encoding='utf-8') as failfile:
+    failfile.write("FAILURE LOG - User fetch failures\n")
+ 
+# ==== READ INPUT CSV ====
+with open(input_csv, 'r', newline='', encoding='utf-8') as infile:
+    reader = csv.DictReader(infile)
+    usernames = [row['username'].strip() for row in reader]
+ 
+# ==== BATCH PROCESSING ====
+batch_size = 50
+total = len(usernames)
+processed = 0
+ 
+for i in range(0, total, batch_size):
+    batch = usernames[i:i + batch_size]
+    results = []
+ 
+    with ThreadPoolExecutor(max_workers=batch_size) as executor:
+        future_to_username = {
+            executor.submit(fetch_user_details, username): username
+            for username in batch
+        }
+ 
+        for future in as_completed(future_to_username):
+            username = future_to_username[future]
+            try:
+                user_data = future.result()
+                if user_data:
+                    results.append(('success', user_data))
+                else:
+                    results.append(('fail', username))
+            except Exception:
+                results.append(('fail', username))
+ 
+    # Append results to file
+    with open(output_csv, 'a', newline='', encoding='utf-8') as outfile, \
+         open(failure_log, 'a', encoding='utf-8') as failfile:
+ 
+        writer = csv.writer(outfile)
+ 
+        for result_type, data in results:
+            if result_type == 'success':
+                writer.writerow([
+                    data.get("user_id", ""),
+                    data.get("username", ""),
+                    data.get("email", ""),
+                    data.get("sAMAccountName", ""),
+                    data.get("dn", ""),
+                    data.get("employeeID", ""),
+                    data.get("objectGUID", ""),
+                    data.get("objectsid", ""),
+                    data.get("accountId", ""),
+                    data.get("domain", ""),
+                    data.get("userPrincipalName", ""),
+                    data.get("manager", ""),
+                    data.get("managerName", ""),
+                    data.get("jobProfile", ""),
+                    data.get("title", ""),
+                    data.get("organizationalStatus", ""),
+                    data.get("enabled", ""),
+                    data.get("mfaEnabled", ""),
+                    data.get("country", ""),
+                    data.get("officeLocation", ""),
+                    data.get("mobilePhone", ""),
+                    data.get("primaryPhone", ""),
+                    data.get("givenName", ""),
+                    data.get("familyName", ""),
+                    data.get("formattedName", "")
+                ])
+            else:
+                failfile.write(f"FAILURE: {data} | Reason: User not found or API error\n")
+ 
+    processed += len(batch)
+    print(f"Processed {processed}/{total}. Sleeping 1 second...")
+    time.sleep(1)
+ 
+print("User backup process completed.")
